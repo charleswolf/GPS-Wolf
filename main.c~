@@ -1,0 +1,425 @@
+/*
+    WWV synchronized clock
+    Copyright (C) 2011  Charles Wolf
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program. If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+#define F_CPU 8000000UL /* 8 MHz Internal Oscillator */
+#include <avr/io.h>
+#include <util/delay.h>
+#include <stdlib.h>
+#include <avr/interrupt.h> 
+#include "./lib/si4735.c"
+#include "./lib/lcd.c"
+#include "./lib/DS3234.c"
+#include "./lib/encoder.c"
+#include "./lib/wwvdecode.c"
+
+//Global variables
+int enc1_count = 0;
+int enc2_count = 0;
+uint8_t enc_a1 = 0;
+uint8_t enc_a2 = 0;
+uint8_t loopcount = 25;
+uint8_t something = 0;
+
+//rotary encoder pin change interrupt handler
+ISR(PCINT0_vect)
+{
+	uint8_t A1 = 0;
+	uint8_t B1 = 0;
+	uint8_t A2 = 0;
+	uint8_t B2 = 0;
+  
+	A1 = read_pin(ENC1_PIN, ENC1_A);	//capture the state of enc1_A
+	A2 = read_pin(ENC2_PIN, ENC2_A);	//capture the state of enc2_A
+		
+	if (enc_a1 != A1)  // if encoder 1 caused the interrupt
+	{
+		_delay_us(100);
+		B1 = read_pin(ENC1_PIN, ENC1_B);
+		if (A1==B1) enc1_count++;
+		else if (A1>B1) enc1_count--;
+	}
+	
+	else if (enc_a2 != A2) // if encoder 2 caused the interrupt
+	{
+		_delay_us(100);
+		B2 = read_pin(ENC2_PIN, ENC2_B);
+		if (A2==B2) enc2_count++;
+		else if (A2>B2) enc2_count--;
+	}
+	
+	//save the past states of encoder A lines
+	enc_a1 = A1;
+	enc_a2 = A2;
+}
+
+//BCD time code pin change interrupt handler
+ISR(PCINT1_vect)
+{
+	if ( WWV_search > 0 ) //searching for 2 good clean markers indicating
+	//the beginning of a message
+	{
+		if (read_pin(PINC, TIME_PIN) < 1)	// on a high to low transition
+		{
+				if (TCNT1 > 50)	TCNT1 = 0;
+		}
+		else //on a low to high transition
+		{	
+			if ( ( TCNT1 >= WWV_MARKER_MIN ) && ( TCNT1 <= WWV_MARKER_MAX ) )
+			{
+				WWV_markers++;
+			}
+			
+			else if ( TCNT1 > 50)
+			{
+				something = 0;
+				WWV_markers = 0;
+			}
+						
+			if (WWV_markers > 1)
+			{
+				WWV_search = 0;
+				_delay_ms(200);
+				TCNT1 = 9;
+				WWV_bits = 0;
+				WWV_position = 1;
+				WWV_samples = 0;
+			}	
+		}
+	}	
+	else // not searching for markers
+	{
+		//edge correction algorithm
+		if (read_pin(PINC, TIME_PIN) < 1)
+		{
+			if ( WWV_position > 295 )
+			{
+				// move towards this edge (only 1/2 way)
+				WWV_position += (312-WWV_position)/2;
+			}
+			if ( WWV_position < 16 )
+			{
+				//move towards this edge (only 1/2 way)
+				WWV_position -= WWV_position/2;
+			}
+		}
+	}
+}		
+
+ISR( TIMER1_OVF_vect )
+{
+	WWV_error++;
+	TCNT1 = 0;
+}
+
+
+//this interrupt occurs every 3.125ms
+ISR( TIMER1_COMPA_vect )
+{
+	if (WWV_search < 1)
+	{
+		WWV_position ++;
+		TCNT1 = 0;
+		
+		// sample the data
+		//WWV_samples keeps the number of "ones" in the last 32 samples. 
+		if (read_pin(PINC, TIME_PIN) > 0) 
+		{
+			if (WWV_samples < 32) WWV_samples ++;
+		}
+		else if (WWV_samples > 0) WWV_samples --;
+		
+		
+
+		if ( WWV_position == 125 ) //400ms
+		{
+			//if the last 100ms was high, the bit is a zero
+			WWV_bit_found = 0;
+			WWV_bitstring[WWV_bits] = 0;
+			if (WWV_samples > 16)
+			{
+				WWV_bit_found++;
+			}
+			
+		}
+		else if ( WWV_position == 219 ) //700ms
+		{
+			if (WWV_samples > 16) 
+			{
+				if ( WWV_bit_found < 1) WWV_bitstring[WWV_bits] = 1;
+			}
+			
+		}
+		else if ( WWV_position == 250 ) 
+		{
+			WWV_bits ++;
+			
+			if ( WWV_bits >= 19 )
+			{
+				//Synchronization complete (rest of message is not used)
+				wwv_decode_time(); 	//decode message & set time
+				WWV_search = 1; 	// go back to searching for markers
+				WWV_bits = 0; 		// clear the bit count
+			}
+		}
+		else if ( WWV_position >= 312 ) // 1 second
+		{
+			WWV_position = 0;
+		}		
+	}
+}
+		
+
+
+int main(void)
+{ 
+	//variables used in main
+	uint8_t time_data[7] = { 0, 0, 0, 0, 0, 0, 0};
+	/*
+	* 		[0]	-	second (0-59)
+	* 		[1]	-	minute (0-59)
+	*		[2]	-	hour (0-23)
+	* 		[3] - 	null 
+	* 		[4]	-	day  (1-31)
+	* 		[5]	-	month (1-12)
+	* 		[6]	-	year (0-99)
+	*/
+	int mode = 0;
+	int8_t band = 0;
+	uint16_t WWV_freq = 10000;
+	int8_t WWV_station = 0;
+	uint16_t AM_freq = 1420;
+	uint16_t FM_freq = 9670;
+	uint8_t status = 0;
+	int8_t volume = 22;
+	int8_t UTC_offset = 0;
+	
+	char * display_string;
+	char value_str[16];
+	char time[2];
+	uint16_t display_value = 0;
+	
+	// initialize display
+	lcd_init(LCD_DISP_ON);
+
+	//initialize rotary encoders
+	encoder_init();
+	
+	//initialize real tme clock
+	DS3234_init();   //initialize the DS3234
+	//SetTimeDate(&time_data[0]);
+	
+	//initialize time decode input
+	init_wwvdecode();
+
+	//initialize radio
+	si4735_init();				//initialize the si4735 port
+	_delay_ms(200); 			//allow time to stabilize	
+	si4735_powerup_am();		//powerup in AM mode
+	si4735_set_volume(volume);	//set volume
+	si4735_am_tune(AM_freq);	//tune radio to a station
+	status = si4735_get_int_status();
+	
+	ReadSRAM(&UTC_offset, 0x00, 1); //get the stored offset
+	
+	
+	while(1)
+	{
+		if ((enc1_count != 0) || (enc2_count !=0) || (loopcount < 10))
+		{
+			if ((enc1_count != 0) || (enc2_count !=0))
+			{
+				loopcount = 0;
+				mode = mode + enc1_count;
+				if (mode > 5) mode = 2;
+				if (mode < 2) mode = 5;
+				enc1_count = 0;
+			}
+			loopcount++;
+			switch(mode)
+			{
+				case 2: 
+					//adjust offset based on encoder 2
+					UTC_offset += enc2_count;
+					if (UTC_offset > 12) UTC_offset = -12;
+					if (UTC_offset < -12) UTC_offset = 12;
+					display_value = UTC_offset;
+					WriteSRAM(&UTC_offset, 0x00, 1);
+					
+					//display time zone message on screen
+					lcd_clrscr();
+					itoa(display_value, &value_str[0], 10);
+					lcd_puts("Time Zone:");
+					lcd_puts("\n");
+					lcd_puts(&value_str[0]);
+					
+					//do stuff to adjust time
+
+				break;
+				case 3:
+					//AM / FM / WWV
+					band = band + enc2_count;
+					if (band > 3) band = 0;
+					if (band < 0) band = 3;
+					
+					switch (band) 
+					{
+						case 0:
+							display_string = "AM Band";
+							if (enc2_count !=0)
+							{
+								si4735_powerdown();
+								si4735_powerup_am();
+								si4735_set_volume(volume);
+								si4735_am_tune(AM_freq);
+								status = si4735_get_int_status();
+							}
+						break;
+						case 1:	
+							display_string = "FM Band";
+							if (enc2_count !=0)
+							{
+								si4735_powerdown();
+								si4735_powerup_fm();
+								si4735_set_volume(volume);
+								si4735_fm_tune(FM_freq);
+								status = si4735_get_int_status();
+							}
+						break;
+						case 2:
+							display_string = "WWV";
+							if (enc2_count !=0)
+							{
+								si4735_powerdown();
+								si4735_powerup_am();
+								si4735_set_volume(volume);
+								si4735_am_tune(WWV_freq);
+								status = si4735_get_int_status();
+							}
+						break;
+						case 3:
+							display_string = "OFF";
+							//si4735_powerdown();
+							if (enc2_count !=0)
+							{	
+								si4735_set_volume(0);
+								si4735_set_property(RX_HARD_MUTE, 0x0003);
+							}
+						break;	
+					}
+					
+					//display radio mode message on screen
+					lcd_clrscr();
+					lcd_puts("Radio Mode:");
+					lcd_puts("\n");
+					lcd_puts(&display_string[0]);
+					
+				break;
+				case 4:
+					switch(band)
+					{
+						case 0:
+							display_string = "AM";
+							AM_freq += (enc2_count*10);
+							display_value = AM_freq;
+							//tune
+							if (enc2_count !=0)
+							{	
+								si4735_am_tune(AM_freq);
+								status = si4735_get_int_status();
+							}		
+						break;
+						case 1:	
+							display_string = "FM";
+							FM_freq += (enc2_count*20);
+							display_value = FM_freq;
+							//tune
+							if (enc2_count !=0)
+							{
+								si4735_fm_tune(FM_freq);
+								status = si4735_get_int_status();
+							}
+						break;
+						case 2:
+							display_string = "WWV";
+							if (enc2_count !=0)
+							{
+								WWV_station += enc2_count;
+								if (WWV_station > 4) WWV_station = 0;
+								if (WWV_station < 0) WWV_station = 4;
+								if (WWV_station == 0) WWV_freq = 2500;
+								else if (WWV_station == 1) WWV_freq = 5000;
+								else if (WWV_station == 2) WWV_freq = 10000;
+								else if (WWV_station == 3) WWV_freq = 15000;
+								else if (WWV_station == 4) WWV_freq = 20000;
+								si4735_fm_tune(FM_freq);
+								status = si4735_get_int_status();
+							}
+							display_value = WWV_freq;
+						break;
+						case 3:
+							display_value = 0;
+							display_string = "Radio OFF";
+						break;
+					}				
+					//display the radio station
+					lcd_clrscr();
+					lcd_puts(&display_string[0]);
+					if (display_value !=0){
+						lcd_puts(" Station:");
+						itoa(display_value, &value_str[0], 10);
+						lcd_puts("\n");
+						lcd_puts(&value_str[0]);
+					}
+				
+				break;
+				case 5:
+					//volume
+					volume = volume + enc2_count;
+					if (volume > 63) volume = 63;
+					if (volume <= 0 ) volume = 0;
+					si4735_set_volume(volume);	//set volume
+					
+					//display the radio station
+					lcd_clrscr();
+					itoa(volume, &value_str[0], 10);
+					lcd_puts("Volume:");
+					lcd_puts("\n");
+					lcd_puts(&value_str[0]);
+				break;
+			}
+			enc2_count = 0;
+		}
+		else{
+			//display the time
+			ReadTimeString(&time_data[0]);
+			lcd_clrscr();
+			lcd_puts("     ");
+			int j= 0;
+			for (j = 2; j>=1; j--)
+			{
+				if (time_data[j] < 10) lcd_puts("0");
+				itoa(time_data[j],&time[0],10);
+				lcd_puts(&time[0]);
+				if (j>1) lcd_puts(":");
+			}
+		}
+		_delay_ms(300);
+	}
+}
+
