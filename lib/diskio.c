@@ -18,9 +18,9 @@
 #endif
 
 /* Defines for SD card SPI access */
-#define SD_CS_PIN   6
-#define SD_CS_PORT   PORTD
-#define SD_CS_DDR  DDRD
+#define SD_CS_PIN   2
+#define SD_CS_PORT   PORTB
+#define SD_CS_DDR  DDRB
 
 
 #define SELECT()      SD_CS_PORT &= ~(1<<SD_CS_PIN)      /* MMC CS = L */
