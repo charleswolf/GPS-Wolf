@@ -32,6 +32,7 @@
 //Global variables
 FATFS FileSystemObject;
 FIL logFile;
+unsigned int bytesWritten;
 
 #include "lib/sdcard.c"
 #include "lib/uart.c"
@@ -40,39 +41,30 @@ FIL logFile;
 //Main
 int main(void)
 { 
+	//allow time to stabilize
 	_delay_ms(1000);
-	//used for writing data
-	
-	char data_string[150];
-	char *msgs[20];
-	char tmp[15];
-	char *p;
+
+	//define variables
+	char data_string[150];	//contains the gps module messages
+	char *msgs[20];			//contains pointers parts of the gpgga message
+	char tmp[15];			//temporary string buffer
+	char *p;				
 	char *l;
 	uint32_t longitude_minutes = 0;
 	uint32_t latitude_minutes = 0;
-	unsigned int bytesWritten;
 	uint8_t header_written = 0;
+	uint8_t path_index = 0;	//number appended to path filename
+	unsigned int i = 0;
 	
-	char header[] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document><Placemark><LineString><coordinates>";
-	char footer[] = "</coordinates></LineString></Placemark></Document></kml>";
-	int i = 0;
-				
+	//initialize hardware
 	init_sdcard();
-	if( sdcard_open() > 0 )
-	{
-		f_write(&logFile, &header[0], strlen(header), &bytesWritten);
-		f_write(&logFile, "\n", 1, &bytesWritten);
-		f_write(&logFile, &footer[0], strlen(footer), &bytesWritten);
-		sdcard_close();
-		header_written = 1;	
-	}
-	
 	USARTInit(MYUBRR);
 	
+	
+	//forever loop
 	while(1)
 	{
 		i = 0;
-		data_string[0] = '$';
 		//wait for a message (starts with $)
 		while (USARTReadChar() != '$');
 		
@@ -84,30 +76,26 @@ int main(void)
 		}
 		
 		//filter for GPGGA message
-		if(strstr(data_string, "GPGGA") !=NULL)
+		if ( strstr( data_string, "GPGGA" ) != NULL )
 		{
 			//check for gps fix
-			if ((data_string[43] != 0x30) && (i>60))
+			if ( ( data_string[43] != 0x30 ) && ( i > 60 ) )
 			{
-				//check disk status
-				if ( disk_status == STA_NOINIT )
+				//Create a new file on the SD card
+				if ( sdcard_open() > 0 ) 
 				{
-					//Create a new file on the SD card
-					if (sdcard_open() > 0) 
-					{
-						//if file open failed try initializing again
-						init_sdcard();
-						if( sdcard_open() )
-						{	//check to see if the header has been written
-							if( header_written == 0 )
-							{
-								f_write(&logFile, &header[0], strlen(header), &bytesWritten);
-								f_write(&logFile, "\n", 1, &bytesWritten);
-								f_write(&logFile, &footer[0], strlen(footer), &bytesWritten);
-								header_written = 1;	
-								sdcard_close();
-								sdcard_open();
-							}
+					//if file open failed try initializing again
+					init_sdcard();
+					if( sdcard_open() )
+					{	//check to see if the header has been written
+						if( header_written == 0 )
+						{
+							f_write(&logFile, &header[0], strlen(header), &bytesWritten);
+							f_write(&logFile, "\n", 1, &bytesWritten);
+							f_write(&logFile, &footer[0], strlen(footer), &bytesWritten);
+							header_written = 1;	
+							sdcard_close();
+							sdcard_open();
 						}
 					}
 				}
@@ -181,7 +169,7 @@ int main(void)
 					
 					ultoa(latitude_minutes, &tmp[0], 10);
 					
-					if (*msgs[5] != 'S') f_write(&logFile, "-", 1, &bytesWritten);
+					if (*msgs[5] != 'N') f_write(&logFile, "-", 1, &bytesWritten);
 					f_write(&logFile, msgs[2], 2, &bytesWritten);
 					f_write(&logFile, ".", 1, &bytesWritten);
 					if(latitude_minutes < 10000)
