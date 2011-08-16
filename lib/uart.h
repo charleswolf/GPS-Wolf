@@ -1,7 +1,7 @@
 #ifndef _USART_H_
 #define _USART_H_
 
-#define FOSC 1000000	//clock speed
+#define FOSC 8000000	//clock speed
 #define BAUD 9600
 //#define MYUBRR FOSC/16/BAUD-1
 #define MYUBRR 51

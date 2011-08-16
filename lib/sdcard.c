@@ -2,6 +2,8 @@
 
 /**CHANGE LOG
  * -----------------------
+ * 7-19-2011 added function for creating new pathfile 
+ * -----------------------
  * 7-17-2011 updated functions to accept filename
  * -----------------------  
  * INITIAL RELEASE
@@ -23,19 +25,20 @@
 **/
 int init_sdcard( uint8_t drive )
 {
+	int status = 1; // 1 == no errors
 	DSTATUS driveStatus = disk_initialize(drive);
 	if ((driveStatus & STA_NODISK) || (driveStatus & STA_NOINIT)) //check for initialization errors
 	{
-		return 0; //error initialization failed
+		status = 0; //error initialization failed
 	}
 	else{ //only mount filesystem if initialization was sucessful
 		if( f_mount(drive, &FileSystemObject) != FR_OK ) 
 		{
 			//flag error
-			return 0; //error mounting failed
+			status = 0; //error mounting failed
 		}
 	}
-return 1; //no errors
+	return status; 
 }
 
 
@@ -52,11 +55,11 @@ return 1; //no errors
 **/
 int sdcard_open( char * filename )
 {
-	if(f_open(&logFile, "/GPS_PATH.kml", FA_READ | FA_WRITE | FA_OPEN_ALWAYS)!= FR_OK) {
+	if(f_open(&logFile, filename , FA_READ | FA_WRITE | FA_OPEN_ALWAYS)!= FR_OK) {
 		//flag error
-		return 1;
+		return 0;
 	}
-	return 0;
+	else return 1;
 }
 
 /**
@@ -72,6 +75,7 @@ int sdcard_open( char * filename )
 **/
 void sdcard_close()
 {
+	//close file
 	f_close(&logFile);
 }
 
@@ -91,10 +95,13 @@ void sdcard_close()
 int sd_check_file( char * filename )
 {
 	int status = 0;
-	status =  f_open(&logFile, "/GPS_PATH.kml", FA_OPEN_EXISTING | FA_READ );
-	if ( status == FR_OK ) fclose( &logFile );
-	return status;
+	//try to open an existing file for reading
+	status =  f_open(&logFile, filename , FA_OPEN_EXISTING | FA_READ );
+	//if sucessful, close the file.  
+	if ( status == FR_OK ) sdcard_close();
+	return status; //return the result of opening the file
 }
+
 
 
 /**
@@ -111,15 +118,13 @@ int sd_check_file( char * filename )
 
 int kml_write_header( char * filename )
 {
-	if( sdcard_open(filename) )
-	{
-		char header[] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document><Placemark><LineString><coordinates>";
-		f_write(&logFile, &header[0], strlen(header), &bytesWritten);
+		char header_a[] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><kml xmlns=\"http://www.opengis.net/kml/2.2\">";
+		char header_b[] = "<Document><Placemark><LineString><coordinates>";
+		f_write(&logFile, &header_a[0], strlen(header_a), &bytesWritten);
+		f_write(&logFile, &header_b[0], strlen(header_b), &bytesWritten);
 		f_write(&logFile, "\n", 1, &bytesWritten);
-		sdcard_close();	
 		return 1;
-	}
-	else return 0;
+
 }
 
 /**
@@ -136,14 +141,43 @@ int kml_write_header( char * filename )
 
 int kml_write_footer( char * filename )
 {
-	if( sdcard_open(filename) )
-	{
-		char footer[] = "</coordinates></LineString></Placemark></Document></kml>";
-		f_write(&logFile, &footer[0], strlen(footer), &bytesWritten);
-		f_write(&logFile, "\n", 1, &bytesWritten);
-		sdcard_close();	
-		return 1;
-	}
-	else return 0;
+	char footer[] = "</coordinates></LineString></Placemark></Document></kml>";
+	f_write(&logFile, &footer[0], strlen(footer), &bytesWritten);
+	return 1;
 }
 
+
+
+
+/**
+* Name : sd_new_pathfile
+*
+* Description: examine the files on the SD card to determine the new 
+* 	path name.  File path names be GPS_PATH_#.KML  where # is an intiger
+*
+* Author(s): Charles Wolf
+*
+* @param: filename - a characterstring large enough to contain the new
+* 	path file name.
+*
+* @return:	function returns an int with the number of pathfiles.  The
+*	created file path name is returned in the pointer "filename"
+**/
+int sd_new_pathfile( char * filename )
+{
+	int i = 0;
+	
+	sprintf( filename, "/path%d.kml",  i );
+	//determine the next path file by checking for old path files
+	while ( sd_check_file( filename ) == FR_OK )
+	{
+		i++;
+		sprintf( filename, "/path%d.kml", i );
+	}
+	//create next path file
+	sdcard_open( filename );
+	kml_write_header( filename );
+	kml_write_footer( filename );
+	f_close(&logFile);
+	return i;	
+}
