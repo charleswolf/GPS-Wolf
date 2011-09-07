@@ -41,7 +41,7 @@ unsigned int bytesWritten;
 //Main
 int main(void)
 { 
-	//allow time to stabilize
+	//allow time for power to stabilize
 	_delay_ms(1000);
 
 	//define variables
@@ -58,10 +58,30 @@ int main(void)
 	uint32_t latitude_minutes_past = 0;
 	uint8_t path_index = 0;	//number appended to path filename
 	unsigned int i = 0;
+	int no_lock_error= 1;	//dont flag startup errors
+	int duplicate_error = 0;
 	
 	//initialize hardware
 	init_sdcard(0);
 	USARTInit(MYUBRR);
+	
+	
+	//turn off unnessisary messages from gps module
+	//Disable GLL message
+	uart_puts("$PSRF103,01,00,00,01*25\r\n");
+	_delay_ms(100);
+	//Disable GSA message
+	uart_puts("$PSRF103,02,00,00,01*26\r\n");
+	_delay_ms(100);
+	//Disable GSV message
+	uart_puts("$PSRF103,03,00,00,01*27\r\n");
+	_delay_ms(100);
+	//Disable RMC message
+	uart_puts("$PSRF103,04,00,00,01*20\r\n");
+	_delay_ms(100);
+	//Disable VTG message
+	uart_puts("$PSRF103,05,00,00,01*21\r\n");
+
 	
 	path_index = sd_new_pathfile( &path_file[0] );
 	
@@ -100,7 +120,7 @@ int main(void)
 			*/
 			
 			
-			//check for gps lock
+			//check for gps fix 
 			if ( ( data_string[43] != 0x30 ) && ( i > 60 ) )
 			{
 				//check status of SD card
@@ -113,6 +133,27 @@ int main(void)
 						msgs[i] = p;
 						i++;
 					}   
+					
+					/* GPGGA message breakdown
+					 *  0 - message id
+					 *  1 - UTC Time
+					 *  2 - Latitude ddmm.mmmm
+					 *  3 - N/S indicator
+					 *  4 - Longitude dddmm.mmmm
+					 *  5 - E/W indicator
+					 *  6 - Position fix indicator
+					 *  7 - satelites used
+					 *  8 - HDOP Horizontal Dillution of Precision
+					 *  9 - MLS Altitude 
+					 *  10- MLS Altitude units
+					 *  11- Geoid Spearation 
+					 *  12- Geoid Separation units
+					 *  13- Age of Diff. Corr (seconds)
+					 *  14- Diff. Ref. Station
+					 *  15- Checksum
+					 *  16- <CR><LF> 
+					 */
+					 
 					
 					//copy string containing longitued to temporary var
 					strcpy( &tmp[0], msgs[4]);
@@ -146,6 +187,7 @@ int main(void)
 						)
 						)
 					{
+						duplicate_error = 0;
 						latitude_minutes_past = latitude_minutes;
 						longitude_minutes_past = longitude_minutes;
 						
@@ -158,7 +200,7 @@ int main(void)
 						//move to the end of the file
 						f_lseek(&logFile, (f_size(&logFile)-footer_len));	
 						
-						if (*msgs[3] != 'E') f_write(&logFile, "-", 1, &bytesWritten);
+						if (*msgs[5] != 'E') f_write(&logFile, "-", 1, &bytesWritten);
 						f_write(&logFile, msgs[4], 3, &bytesWritten);
 						f_write(&logFile, ".", 1, &bytesWritten);
 						
@@ -185,7 +227,7 @@ int main(void)
 						
 						ultoa(latitude_minutes, &tmp[0], 10);
 						
-						//if (*msgs[5] != 'N') f_write(&logFile, "-", 1, &bytesWritten);
+						if (*msgs[3] != 'N') f_write(&logFile, "-", 1, &bytesWritten);
 						f_write(&logFile, msgs[2], 2, &bytesWritten);
 						f_write(&logFile, ".", 1, &bytesWritten);
 						if(latitude_minutes < 10000)
@@ -205,15 +247,39 @@ int main(void)
 							}
 						}
 						f_write(&logFile, &tmp[0], strlen(tmp), &bytesWritten);
-						f_write(&logFile, "\n", 1, &bytesWritten);
 						
+						//write altitude to KML flie
+						f_write(&logFile, ", ", 2, &bytesWritten);
+						f_write(&logFile, msgs[9], strlen(msgs[9]), &bytesWritten);
+						
+						//create new line
+						f_write(&logFile, "\n", 1, &bytesWritten);
+						//write KML fotter
 						f_write(&logFile, &footer[0], strlen(footer), &bytesWritten);
 						
 						//close the file
 						sdcard_close();
 						
+						no_lock_error = 0;
+						
 						//delay between recorded points 
-						_delay_ms(5000);
+						_delay_ms(4300); 
+						//the GPS modue outputs messages at 1Hz, start listening for the message before 5 seconds passes
+						//This should be modified in the future for power savings.  
+						
+					}
+					else
+					{
+						//flag same point
+						if ( duplicate_error == 0)
+						{
+							duplicate_error = 1; //set flag so error is not duplicated
+							sdcard_open ( "errors.txt" );
+							f_lseek ( &logFile, f_size(&logFile));
+							f_write(&logFile, "duplicate", 9, & bytesWritten);
+							f_write(&logFile, "\n", 1, &bytesWritten);
+							f_close(&logFile);
+						}
 					}
 				}
 				else
@@ -225,6 +291,19 @@ int main(void)
 						//pathfile wasn't found, create a new one
 						path_index = sd_new_pathfile( &path_file[0] );
 					}
+				}
+			}
+			else
+			{
+				//flag no lock
+				if ( no_lock_error == 0 )
+				{
+					no_lock_error = 1;
+					sdcard_open ( "errors.txt" );
+					f_lseek ( &logFile, f_size(&logFile));
+					f_write(&logFile, "no fix", 6, & bytesWritten);
+					f_write(&logFile, "\n", 1, &bytesWritten);
+					f_close(&logFile);
 				}
 			}
 		}
