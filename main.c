@@ -17,6 +17,18 @@
 */
 
 #define F_CPU 8000000UL //8 MHz Internal Oscillator 
+
+
+//Modes of operation
+#define NORMAL_MODE 0	//standard operating mode
+#define DEBUG_MODE	1	//write debug modes 
+#define GPGGA_MODE	2	//write each GPGGA message to a file
+#define TIME_MODE	4	//add the time to every 10th point
+
+
+#define RUN_MODE ( NORMAL_MODE | TIME_MODE )
+
+
 #include <avr/io.h>
 #include <util/delay.h>
 #include <avr/pgmspace.h>
@@ -41,13 +53,10 @@ unsigned int bytesWritten;
 //Main
 int main(void)
 { 
-	//allow time for power to stabilize
-	_delay_ms(1000);
-
 	//define variables
 	char path_file[30];
 	char data_string[150];	//contains the gps module messages
-	char *msgs[20];			//contains pointers parts of the gpgga message
+	char *msgs[20];			//contains pointers to parts of the gpgga message
 	char tmp[15];			//temporary string buffer
 	char *p , *l;
 	char footer[] = "</coordinates></LineString></Placemark></Document></kml>";
@@ -57,14 +66,26 @@ int main(void)
 	uint32_t latitude_minutes = 0;
 	uint32_t latitude_minutes_past = 0;
 	uint8_t path_index = 0;	//number appended to path filename
+	uint8_t time_count = 100;
 	unsigned int i = 0;
 	int no_lock_error= 1;	//dont flag startup errors
 	int duplicate_error = 0;
 	
+	
+	//reference un-used pins 
+	DDRB 	|= (1<<PB0) | (1<<PB1) | (1<<PB6) | (1<<PB7);
+	PORTB 	&= !((1<<PB0) | (1<<PB1) | (1<<PB6) | (1<<PB7));
+	DDRC 	|= 0xFF;	//all output
+	PORTC 	&= 0x00;	//all low
+	DDRD	|= (1<<PD2) | (1<<PD3) | (1<<PD4) | (1<<PD5) | (1<<PD6) | (1<<PD7);
+	PORTD	&= !((1<<PD2) | (1<<PD3) | (1<<PD4) | (1<<PD5) | (1<<PD6) | (1<<PD7));
+	
+	//allow time for power to stabilize
+	_delay_ms(1000);
+	
 	//initialize hardware
 	init_sdcard(0);
 	USARTInit(MYUBRR);
-	
 	
 	//turn off unnessisary messages from gps module
 	//Disable GLL message
@@ -85,12 +106,24 @@ int main(void)
 	
 	path_index = sd_new_pathfile( &path_file[0] );
 	
-	//Make sure a SD card was inserted
+	//Make sure a SD card was inserted before moving on
 	while ( sd_check_file( &path_file[0] ) != FR_OK )
 	{
+		//try to create a pathfile 
+		init_sdcard(0);
 		path_index = sd_new_pathfile( &path_file[0] );
 		_delay_ms(1000);
 	}
+	
+	
+	#if (RUN_MODE & DEBUG_MODE) == DEBUG_MODE
+		sdcard_open ( "debug.txt" ); // open error file
+		f_lseek ( &logFile, f_size(&logFile));//move to last line
+		f_write(&logFile, "new path", 8, & bytesWritten);
+		f_write(&logFile, "\n", 1, &bytesWritten);//next line
+		f_close(&logFile);//close file
+	#endif
+	
 	
 	//forever loop
 	while(1)
@@ -111,13 +144,13 @@ int main(void)
 		//filter for GPGGA message
 		if ( strstr( data_string, "GPGGA" ) != NULL )
 		{
-			/*
-			sdcard_open ( "GPGGA.txt" );
-			f_lseek ( &logFile, f_size(&logFile));
-			f_write(&logFile, &data_string[0], strlen(data_string), & bytesWritten);
-			f_write(&logFile, "\n", 1, &bytesWritten);
-			f_close(&logFile);
-			*/
+			#if (RUN_MODE & GPGGA_MODE ) == GPGGA_MODE
+				sdcard_open ( "GPGGA.txt" );
+				f_lseek ( &logFile, f_size(&logFile));
+				f_write(&logFile, &data_string[0], strlen(data_string), & bytesWritten);
+				f_write(&logFile, "\n", 1, &bytesWritten);
+				f_close(&logFile);
+			#endif
 			
 			
 			//check for gps fix 
@@ -125,7 +158,13 @@ int main(void)
 			{
 				//check status of SD card
 				if ( sd_check_file( &path_file[0] ) == FR_OK )
-				{					
+				{	
+					//open file
+					sdcard_open( &path_file[0] );
+					
+					//move to the end of the file
+					f_lseek(&logFile, (f_size(&logFile)-footer_len));	
+						
 					//break up the message by each comma
 					i = 0; 
 					for(p=strtok_r(data_string, ",",&l); p != NULL; p=strtok_r(NULL, ",",&l))
@@ -194,12 +233,6 @@ int main(void)
 						//convert back to string
 						ultoa(longitude_minutes, &tmp[0], 10);
 						
-						//open file
-						sdcard_open( &path_file[0] );
-						
-						//move to the end of the file
-						f_lseek(&logFile, (f_size(&logFile)-footer_len));	
-						
 						if (*msgs[5] != 'E') f_write(&logFile, "-", 1, &bytesWritten);
 						f_write(&logFile, msgs[4], 3, &bytesWritten);
 						f_write(&logFile, ".", 1, &bytesWritten);
@@ -252,6 +285,27 @@ int main(void)
 						f_write(&logFile, ", ", 2, &bytesWritten);
 						f_write(&logFile, msgs[9], strlen(msgs[9]), &bytesWritten);
 						
+						
+						#if (RUN_MODE & TIME_MODE) == TIME_MODE
+							if (time_count >= 9 )
+							{
+								//write time in a commment every 10th entry
+								strcpy( &tmp[0], msgs[1]); //transfer time to a temp string
+								f_write(&logFile, " <!-- ", 6, &bytesWritten);
+								f_write(&logFile, &tmp[0], 2, &bytesWritten);
+								f_write(&logFile, ":", 1, &bytesWritten);
+								f_write(&logFile, &tmp[2], 2, &bytesWritten);
+								f_write(&logFile, ":", 1, &bytesWritten);
+								f_write(&logFile, &tmp[4], 2, &bytesWritten);
+								f_write(&logFile, " -->", 4, &bytesWritten);
+								time_count = 0;
+							}
+							else
+							{
+								time_count ++;
+							}
+						#endif
+						
 						//create new line
 						f_write(&logFile, "\n", 1, &bytesWritten);
 						//write KML fotter
@@ -268,19 +322,21 @@ int main(void)
 						//This should be modified in the future for power savings.  
 						
 					}
+					#if (RUN_MODE & DEBUG_MODE) == DEBUG_MODE
 					else
 					{
 						//flag same point
 						if ( duplicate_error == 0)
 						{
 							duplicate_error = 1; //set flag so error is not duplicated
-							sdcard_open ( "errors.txt" );
+							sdcard_open ( "debug.txt" );
 							f_lseek ( &logFile, f_size(&logFile));
 							f_write(&logFile, "duplicate", 9, & bytesWritten);
 							f_write(&logFile, "\n", 1, &bytesWritten);
 							f_close(&logFile);
 						}
 					}
+					#endif
 				}
 				else
 				{
@@ -290,22 +346,33 @@ int main(void)
 					{
 						//pathfile wasn't found, create a new one
 						path_index = sd_new_pathfile( &path_file[0] );
+						
+							#if (RUN_MODE & DEBUG_MODE) == DEBUG_MODE 
+								sdcard_open ( "debug.txt" ); // open error file
+								f_lseek ( &logFile, f_size(&logFile));//move to last line
+								f_write(&logFile, "new path", 8, & bytesWritten);
+								f_write(&logFile, "\n", 1, &bytesWritten);//next line
+								f_close(&logFile);//close file
+							#endif
+						
 					}
 				}
 			}
+			#if (RUN_MODE & DEBUG_MODE) == DEBUG_MODE
 			else
 			{
 				//flag no lock
 				if ( no_lock_error == 0 )
 				{
 					no_lock_error = 1;
-					sdcard_open ( "errors.txt" );
-					f_lseek ( &logFile, f_size(&logFile));
+					sdcard_open ( "debug.txt" ); // open error file
+					f_lseek ( &logFile, f_size(&logFile));//move to last line
 					f_write(&logFile, "no fix", 6, & bytesWritten);
-					f_write(&logFile, "\n", 1, &bytesWritten);
-					f_close(&logFile);
+					f_write(&logFile, "\n", 1, &bytesWritten);//next line
+					f_close(&logFile);//close file
 				}
 			}
+			#endif
 		}
 	}
 }

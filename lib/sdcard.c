@@ -119,9 +119,11 @@ int sd_check_file( char * filename )
 int kml_write_header( char * filename )
 {
 		char header_a[] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><kml xmlns=\"http://www.opengis.net/kml/2.2\">";
-		char header_b[] = "<Document><Placemark><LineString><coordinates>";
+		char header_b[] = "<Document><Style id=\"l_c\"><LineStyle><color>7f00ffff</color><width>3</width></LineStyle></Style>";
+		char header_c[] = "<Placemark><styleUrl>#l_c</styleUrl><LineString><coordinates>";
 		f_write(&logFile, &header_a[0], strlen(header_a), &bytesWritten);
 		f_write(&logFile, &header_b[0], strlen(header_b), &bytesWritten);
+		f_write(&logFile, &header_c[0], strlen(header_c), &bytesWritten);
 		f_write(&logFile, "\n", 1, &bytesWritten);
 		return 1;
 
