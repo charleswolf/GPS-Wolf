@@ -2,6 +2,8 @@
 
 /**CHANGE LOG
  * -----------------------
+ * 10-13-2011 changed from .kml to .gpx xml filetype
+ * -----------------------
  * 7-19-2011 added function for creating new pathfile 
  * -----------------------
  * 7-17-2011 updated functions to accept filename
@@ -105,7 +107,7 @@ int sd_check_file( char * filename )
 
 
 /**
-* Name : kml_write_header
+* Name : gpx_write_header
 *
 * Description: write header portion of KML file
 *
@@ -115,6 +117,29 @@ int sd_check_file( char * filename )
 *
 * @return: none
 **/
+
+int gpx_write_header( char * filename )
+{
+		char header_a[] = "<?xml version=\"1.0\"?>\n<gpx version = \"0.6\" creator = \"GPS WOLF\">\n<trk>\n<name>Path</name>\n<number>1</number>\n<trkseg>\n";
+		f_write(&logFile, &header_a[0], strlen(header_a), &bytesWritten);
+		return 1;
+
+}
+
+
+
+
+/**
+* Name : kml_write_header (inactive)
+*
+* Description: write header portion of KML file
+*
+* Author(s): Charles Wolf
+*
+* @param: filename - name of file to write header to
+*
+* @return: none
+
 
 int kml_write_header( char * filename )
 {
@@ -128,9 +153,11 @@ int kml_write_header( char * filename )
 		return 1;
 
 }
+**/
+
 
 /**
-* Name : kml_write_footer
+* Name : gpx_write_footer
 *
 * Description: write header portion of KML file
 *
@@ -141,13 +168,34 @@ int kml_write_header( char * filename )
 * @return: none
 **/
 
+int gpx_write_footer( char * filename )
+{
+	char footer[] = "</trkseg></trk></gpx>";
+	f_write(&logFile, &footer[0], strlen(footer), &bytesWritten);
+	return 1;
+}
+
+
+
+/**
+* Name : kml_write_footer  (inactive)
+*
+* Description: write header portion of KML file
+*
+* Author(s): Charles Wolf
+*
+* @param: filename - name of file to write footer to
+*
+* @return: none
+
+
 int kml_write_footer( char * filename )
 {
 	char footer[] = "</coordinates></LineString></Placemark></Document></kml>";
 	f_write(&logFile, &footer[0], strlen(footer), &bytesWritten);
 	return 1;
 }
-
+**/
 
 
 
@@ -155,7 +203,7 @@ int kml_write_footer( char * filename )
 * Name : sd_new_pathfile
 *
 * Description: examine the files on the SD card to determine the new 
-* 	path name.  File path names be GPS_PATH_#.KML  where # is an intiger
+* 	path name.  File path names be GPS_PATH_#.gpx  where # is an intiger
 *
 * Author(s): Charles Wolf
 *
@@ -169,17 +217,17 @@ int sd_new_pathfile( char * filename )
 {
 	int i = 0;
 	
-	sprintf( filename, "/path%d.kml",  i );
+	sprintf( filename, "/path%d.gpx",  i );
 	//determine the next path file by checking for old path files
 	while ( sd_check_file( filename ) == FR_OK )
 	{
 		i++;
-		sprintf( filename, "/path%d.kml", i );
+		sprintf( filename, "/path%d.gpx", i );
 	}
 	//create next path file
 	sdcard_open( filename );
-	kml_write_header( filename );
-	kml_write_footer( filename );
+	gpx_write_header( filename );
+	gpx_write_footer( filename );
 	f_close(&logFile);
 	return i;	
 }

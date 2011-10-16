@@ -23,10 +23,9 @@
 #define NORMAL_MODE 0	//standard operating mode
 #define DEBUG_MODE	1	//write debug modes 
 #define GPGGA_MODE	2	//write each GPGGA message to a file
-#define TIME_MODE	4	//add the time to every 10th point
 
 
-#define RUN_MODE ( NORMAL_MODE | TIME_MODE )
+#define RUN_MODE NORMAL_MODE 
 
 
 #include <avr/io.h>
@@ -55,18 +54,23 @@ int main(void)
 { 
 	//define variables
 	char path_file[30];
-	char data_string[150];	//contains the gps module messages
+	char data_string[102];	//contains the gps module messages
+	char rmc_string[102];
 	char *msgs[20];			//contains pointers to parts of the gpgga message
+	char *RMC_msgs[15];		//contains pointers to parts of the gprmc message
 	char tmp[15];			//temporary string buffer
 	char *p , *l;
-	char footer[] = "</coordinates></LineString></Placemark></Document></kml>";
-	int footer_len = 56;
+	char footer[] = "</trkseg></trk></gpx>";
+	int footer_len = 21;
 	uint32_t longitude_minutes = 0;
 	uint32_t longitude_minutes_past = 0;
 	uint32_t latitude_minutes = 0;
 	uint32_t latitude_minutes_past = 0;
 	uint8_t path_index = 0;	//number appended to path filename
-	uint8_t time_count = 100;
+	uint8_t date_check = 0;
+	char RMC_year[6] = "11"; 
+	char RMC_month[6] = "10";
+	char RMC_day[6] = "15";
 	unsigned int i = 0;
 	int no_lock_error= 1;	//dont flag startup errors
 	int duplicate_error = 0;
@@ -98,7 +102,7 @@ int main(void)
 	uart_puts("$PSRF103,03,00,00,01*27\r\n");
 	_delay_ms(100);
 	//Disable RMC message
-	uart_puts("$PSRF103,04,00,00,01*20\r\n");
+	//uart_puts("$PSRF103,04,00,00,01*20\r\n");
 	_delay_ms(100);
 	//Disable VTG message
 	uart_puts("$PSRF103,05,00,00,01*21\r\n");
@@ -189,10 +193,64 @@ int main(void)
 					 *  12- Geoid Separation units
 					 *  13- Age of Diff. Corr (seconds)
 					 *  14- Diff. Ref. Station
-					 *  15- Checksum
+					 *  15- Checksum (dont include $)
 					 *  16- <CR><LF> 
 					 */
-					 
+					 					
+					//update the data if needed
+					 while (date_check < 1) //get the date
+					 {
+						
+						i = 0;
+						//wait for a message (starts with $)
+						rmc_string[0] = '$';
+						
+						// Query GPRMC message
+						uart_puts("$PSRF103,4,1,0,1*21\r\n");
+					
+						while (USARTReadChar() != '$');
+						
+						//retrieve message
+						while ((rmc_string[i] != "\r" ) && (i < 80 ))
+						{
+							i++;
+							rmc_string[i] = USARTReadChar();
+						}
+						rmc_string[i+1] = 0;
+						
+						//check for GPGGA message
+						if ( strstr( rmc_string, "RMC" ) != NULL )
+						{
+							//break up the message by each comma
+							i = 0; 
+							for(p=strtok_r(rmc_string, ",",&l); p != NULL; p=strtok_r(NULL, ",",&l))
+							{
+								RMC_msgs[i] = p;
+								i++;
+							} 
+							/* GPRMC message breakdown
+							 *  0 - message id
+							 *  1 - UTC Time
+							 *  2 - Status A = valid data V=not valid
+							 *  3 - Latitude ddmm.mmmm
+							 *  4 - N/S indicator
+							 *  5 - Longitude dddmm.mmmm
+							 *  6 - E/W indicator
+							 *  7 - Speed over ground
+							 *  8 - Course over ground
+							 *  9 - Date
+							 *  10- Magnetic Variation
+							 *  11- Mode 
+							 *  12- Checksum
+							 *  13- <CR><LF> 
+							 */ 
+							 
+							date_check = 10; //don't check the date again untill 1 minute from tomorrow
+							strcpy( &RMC_day[0], RMC_msgs[9]);
+							strcpy( &RMC_month[0], RMC_msgs[9]+2);
+							strcpy( &RMC_year[0], RMC_msgs[9]+4);
+						}						 
+					 }
 					
 					//copy string containing longitued to temporary var
 					strcpy( &tmp[0], msgs[4]);
@@ -219,12 +277,8 @@ int main(void)
 					latitude_minutes /= 6UL;
 					
 					//check if in the same position
-					if (!
-						(
-						(latitude_minutes == latitude_minutes_past ) ||
-						(longitude_minutes == longitude_minutes_past) 
-						)
-						)
+					if (!((latitude_minutes == latitude_minutes_past ) &&
+						(longitude_minutes == longitude_minutes_past)))
 					{
 						duplicate_error = 0;
 						latitude_minutes_past = latitude_minutes;
@@ -232,6 +286,8 @@ int main(void)
 						
 						//convert back to string
 						ultoa(longitude_minutes, &tmp[0], 10);
+						
+						f_write(&logFile, "<trkpt lon=\"", 12, &bytesWritten);
 						
 						if (*msgs[5] != 'E') f_write(&logFile, "-", 1, &bytesWritten);
 						f_write(&logFile, msgs[4], 3, &bytesWritten);
@@ -255,7 +311,7 @@ int main(void)
 							}
 						}
 						f_write(&logFile, &tmp[0], strlen(tmp), &bytesWritten);
-						f_write(&logFile, ", ", 2, &bytesWritten);
+						f_write(&logFile, "\" lat=\"", 7, &bytesWritten);
 						
 						
 						ultoa(latitude_minutes, &tmp[0], 10);
@@ -281,30 +337,34 @@ int main(void)
 						}
 						f_write(&logFile, &tmp[0], strlen(tmp), &bytesWritten);
 						
-						//write altitude to KML flie
-						f_write(&logFile, ", ", 2, &bytesWritten);
+						//write altitude to GPX flie
+						f_write(&logFile, "\">\n<ele>", 8, &bytesWritten);
 						f_write(&logFile, msgs[9], strlen(msgs[9]), &bytesWritten);
+						f_write(&logFile, "</ele>\n<time>", 13, &bytesWritten);
+
+						//write time to ISO 8601 specification for date/time representation
+						f_write(&logFile, "20", 2, &bytesWritten);
+						f_write(&logFile, &RMC_year[0], 2, &bytesWritten);
+						f_write(&logFile, "-", 1, &bytesWritten);
+						f_write(&logFile, &RMC_month[0], 2, &bytesWritten);
+						f_write(&logFile, "-", 1, &bytesWritten);
+						f_write(&logFile, &RMC_day[0], 2, &bytesWritten);
+						strcpy( &tmp[0], msgs[1]); //transfer time to a temp string
+						f_write(&logFile, "T" ,1, &bytesWritten); 
+						f_write(&logFile, &tmp[0], 2, &bytesWritten);
+						f_write(&logFile, ":", 1, &bytesWritten);
+						f_write(&logFile, &tmp[2], 2, &bytesWritten);
+						f_write(&logFile, ":", 1, &bytesWritten);
+						f_write(&logFile, &tmp[4], 2, &bytesWritten);
+						f_write(&logFile, "Z</time>\n</trkpt>" ,17, &bytesWritten);
 						
-						
-						#if (RUN_MODE & TIME_MODE) == TIME_MODE
-							if (time_count >= 9 )
+						if (strstr( &tmp[0], "23" ) != NULL)
+						{
+							if (strstr( &tmp[2], "59" ) != NULL)
 							{
-								//write time in a commment every 10th entry
-								strcpy( &tmp[0], msgs[1]); //transfer time to a temp string
-								f_write(&logFile, " <!-- ", 6, &bytesWritten);
-								f_write(&logFile, &tmp[0], 2, &bytesWritten);
-								f_write(&logFile, ":", 1, &bytesWritten);
-								f_write(&logFile, &tmp[2], 2, &bytesWritten);
-								f_write(&logFile, ":", 1, &bytesWritten);
-								f_write(&logFile, &tmp[4], 2, &bytesWritten);
-								f_write(&logFile, " -->", 4, &bytesWritten);
-								time_count = 0;
+								date_check = 0;
 							}
-							else
-							{
-								time_count ++;
-							}
-						#endif
+						}
 						
 						//create new line
 						f_write(&logFile, "\n", 1, &bytesWritten);
@@ -317,7 +377,7 @@ int main(void)
 						no_lock_error = 0;
 						
 						//delay between recorded points 
-						_delay_ms(4300); 
+						_delay_ms(4001); 
 						//the GPS modue outputs messages at 1Hz, start listening for the message before 5 seconds passes
 						//This should be modified in the future for power savings.  
 						
