@@ -383,7 +383,7 @@ int main(void)
 						no_lock_error = 0;
 						
 						//delay between recorded points 
-						_delay_ms(4003); 
+						//_delay_ms(4003); 
 				
 					}
 					#if (RUN_MODE & DEBUG_MODE) == DEBUG_MODE
