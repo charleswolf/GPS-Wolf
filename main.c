@@ -43,6 +43,7 @@
 //Global variables
 FATFS FileSystemObject;
 FIL logFile;
+FIL logdebug;
 unsigned int bytesWritten;
 
 #include "lib/sdcard.c"
@@ -62,6 +63,8 @@ int main(void)
 	char *p , *l;
 	char footer[] = "</trkseg></trk></gpx>";
 	int footer_len = 21;
+	int rmc_items = 0;
+	int date_start = 0;
 	uint32_t longitude_minutes = 0;
 	uint32_t longitude_minutes_past = 0;
 	uint32_t latitude_minutes = 0;
@@ -143,7 +146,7 @@ int main(void)
 			i++;
 			data_string[i] = USARTReadChar();
 		}
-		data_string[i+1] = 0;
+		data_string[i+1] = 0; //terminate string
 		
 		//filter for GPGGA message
 		if ( strstr( data_string, "GPGGA" ) != NULL )
@@ -168,7 +171,7 @@ int main(void)
 					
 					//move to the end of the file
 					f_lseek(&logFile, (f_size(&logFile)-footer_len));	
-						
+											
 					//break up the message by each comma
 					i = 0; 
 					for(p=strtok_r(data_string, ",",&l); p != NULL; p=strtok_r(NULL, ",",&l))
@@ -196,59 +199,64 @@ int main(void)
 					 *  15- Checksum (dont include $)
 					 *  16- <CR><LF> 
 					 */
-					 					
+					
 					//update the data if needed
-					 while (date_check < 1) //get the date
+					 if (date_check < 1) //get the date
 					 {
-						
-						i = 0;
-						//wait for a message (starts with $)
-						rmc_string[0] = '$';
+						rmc_string[0] = '$';  //make sure first char is not null
 						
 						// Query GPRMC message
 						uart_puts("$PSRF103,4,1,0,1*21\r\n");
 					
+						//wait for GPRMC message
 						while (USARTReadChar() != '$');
 						
+						rmc_string[1] = USARTReadChar();
+						rmc_string[2] = USARTReadChar();
+						rmc_string[3] = USARTReadChar();
+						i = 2;
+						
+						if (rmc_string[3] != 'R')
+						{
+							while (USARTReadChar() != '$');
+							i = 0;
+						}
+						
 						//retrieve message
-						while ((rmc_string[i] != "\r" ) && (i < 80 ))
+						while ((rmc_string[i] != 0x0A ) && (i < 80 ))
 						{
 							i++;
 							rmc_string[i] = USARTReadChar();
 						}
-						rmc_string[i+1] = 0;
+						rmc_string[i+1] = 0;//terminate string
 						
-						//check for GPGGA message
+						
+						//Check if retrieved message was the GPRMC message
 						if ( strstr( rmc_string, "RMC" ) != NULL )
 						{
 							//break up the message by each comma
 							i = 0; 
-							for(p=strtok_r(rmc_string, ",",&l); p != NULL; p=strtok_r(NULL, ",",&l))
+							rmc_items = 0;
+							for (i = 0; i <= strlen(rmc_string); i++)
 							{
-								RMC_msgs[i] = p;
-								i++;
-							} 
-							/* GPRMC message breakdown
-							 *  0 - message id
-							 *  1 - UTC Time
-							 *  2 - Status A = valid data V=not valid
-							 *  3 - Latitude ddmm.mmmm
-							 *  4 - N/S indicator
-							 *  5 - Longitude dddmm.mmmm
-							 *  6 - E/W indicator
-							 *  7 - Speed over ground
-							 *  8 - Course over ground
-							 *  9 - Date
-							 *  10- Magnetic Variation
-							 *  11- Mode 
-							 *  12- Checksum
-							 *  13- <CR><LF> 
-							 */ 
+								if (rmc_string[i] == ',')
+								{
+									rmc_items++;
+									if (rmc_items == 9 )
+									{
+										date_start = i+1;
+									}
+								}
+							}
 							 
-							date_check = 10; //don't check the date again untill 1 minute from tomorrow
-							strcpy( &RMC_day[0], RMC_msgs[9]);
-							strcpy( &RMC_month[0], RMC_msgs[9]+2);
-							strcpy( &RMC_year[0], RMC_msgs[9]+4);
+							 //check if message has valid data.  
+							if ( rmc_string[18] == 'A' ) 
+							{
+								date_check = 10; //don't check the date again untill 1 minute from tomorrow
+								strcpy( &RMC_day[0], &rmc_string[date_start]);
+								strcpy( &RMC_month[0], &rmc_string[date_start+2]);
+								strcpy( &RMC_year[0], &rmc_string[date_start+4]);
+							}
 						}						 
 					 }
 					
@@ -337,7 +345,7 @@ int main(void)
 						}
 						f_write(&logFile, &tmp[0], strlen(tmp), &bytesWritten);
 						
-						//write altitude to GPX flie
+						//write elevation to GPX flie ...
 						f_write(&logFile, "\">\n<ele>", 8, &bytesWritten);
 						f_write(&logFile, msgs[9], strlen(msgs[9]), &bytesWritten);
 						f_write(&logFile, "</ele>\n<time>", 13, &bytesWritten);
@@ -356,19 +364,17 @@ int main(void)
 						f_write(&logFile, &tmp[2], 2, &bytesWritten);
 						f_write(&logFile, ":", 1, &bytesWritten);
 						f_write(&logFile, &tmp[4], 2, &bytesWritten);
-						f_write(&logFile, "Z</time>\n</trkpt>" ,17, &bytesWritten);
+						f_write(&logFile, "Z</time>\n</trkpt>\n" ,18, &bytesWritten);
 						
-						if (strstr( &tmp[0], "23" ) != NULL)
+						if (strstr( &tmp[0], "00" ) != NULL)
 						{
-							if (strstr( &tmp[2], "59" ) != NULL)
+							if (strstr( &tmp[2], "00" ) != NULL)
 							{
 								date_check = 0;
 							}
 						}
 						
-						//create new line
-						f_write(&logFile, "\n", 1, &bytesWritten);
-						//write KML fotter
+						//write fotter
 						f_write(&logFile, &footer[0], strlen(footer), &bytesWritten);
 						
 						//close the file
@@ -377,10 +383,8 @@ int main(void)
 						no_lock_error = 0;
 						
 						//delay between recorded points 
-						_delay_ms(4001); 
-						//the GPS modue outputs messages at 1Hz, start listening for the message before 5 seconds passes
-						//This should be modified in the future for power savings.  
-						
+						_delay_ms(4003); 
+				
 					}
 					#if (RUN_MODE & DEBUG_MODE) == DEBUG_MODE
 					else
@@ -405,34 +409,10 @@ int main(void)
 					if (sd_check_file( &path_file[0] ) != FR_OK )
 					{
 						//pathfile wasn't found, create a new one
-						path_index = sd_new_pathfile( &path_file[0] );
-						
-							#if (RUN_MODE & DEBUG_MODE) == DEBUG_MODE 
-								sdcard_open ( "debug.txt" ); // open error file
-								f_lseek ( &logFile, f_size(&logFile));//move to last line
-								f_write(&logFile, "new path", 8, & bytesWritten);
-								f_write(&logFile, "\n", 1, &bytesWritten);//next line
-								f_close(&logFile);//close file
-							#endif
-						
+						path_index = sd_new_pathfile( &path_file[0] );			
 					}
 				}
 			}
-			#if (RUN_MODE & DEBUG_MODE) == DEBUG_MODE
-			else
-			{
-				//flag no lock
-				if ( no_lock_error == 0 )
-				{
-					no_lock_error = 1;
-					sdcard_open ( "debug.txt" ); // open error file
-					f_lseek ( &logFile, f_size(&logFile));//move to last line
-					f_write(&logFile, "no fix", 6, & bytesWritten);
-					f_write(&logFile, "\n", 1, &bytesWritten);//next line
-					f_close(&logFile);//close file
-				}
-			}
-			#endif
 		}
 	}
 }
